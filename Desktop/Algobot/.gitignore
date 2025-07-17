@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+
+# Log files
+*.log
+
+# Output/history files
+*.json
+*.csv
+bot_status.json
+daily_stats_*.json
+trade_history*.json
+trade_history*.csv
+analytics.json
+
+# Binary files
+*.whl
+
+# Images/plots
+*.png
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node modules (if frontend exists)
+node_modules/
