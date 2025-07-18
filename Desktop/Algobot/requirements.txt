@@ -12,3 +12,5 @@ pytz
 # Install with: pip install --user TA_Lib‑0.4.0‑cp311‑cp311‑win_amd64.whl 
 flask-jwt-extended
 flask-sqlalchemy 
+mkdocs
+mkdocs-material 
