@@ -1,3 +1,5 @@
+![CI](https://github.com/Keron001/algobot/actions/workflows/python-app.yml/badge.svg)
+
 # Algobot
 
 A robust, user-specific, and production-ready trading bot for MetaTrader 5.

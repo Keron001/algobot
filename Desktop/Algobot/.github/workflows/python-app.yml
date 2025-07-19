@@ -27,3 +27,7 @@ jobs:
     - name: Run tests
       run: |
         python test_enhanced_bot.py 
+    - name: Deploy to Render.com
+      if: ${{ success() && github.ref == 'refs/heads/main' }}
+      run: |
+        curl -X POST "https://render.com/deploy/YOUR-RENDER-DEPLOY-HOOK-URL" 

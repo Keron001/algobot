@@ -205,7 +205,7 @@ class RiskManager:
         return total_risk
     
     def add_position(self, symbol, direction, entry_price, lot_size, stop_loss, take_profit, trailing_stop=None):
-        """Add a new position to tracking, with optional trailing stop"""
+        """Add a new position to tracking, with entry time and optional trailing stop"""
         position = {
             'symbol': symbol,
             'direction': direction,
@@ -214,11 +214,12 @@ class RiskManager:
             'stop_loss': stop_loss,
             'take_profit': take_profit,
             'trailing_stop': trailing_stop,  # NEW: track trailing stop
-            'entry_time': None,  # Will be set by execution module
-            'unrealized_pnl': 0.0
+            'entry_time': datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),  # Set entry time
+            'unrealized_pnl': 0.0,
+            'pnl': 0.0,
         }
         self.open_positions.append(position)
-        logger.info(f"Added position: {symbol} {direction} {lot_size} lots at {entry_price} (Trailing Stop: {trailing_stop})")
+        logger.info(f"Added position: {symbol} {direction} {lot_size} lots at {entry_price} (Trailing Stop: {trailing_stop}) Entry Time: {position['entry_time']}")
 
     def update_trailing_stops(self, get_latest_data, update_broker_sl):
         """Recalculate and update trailing stops for all open positions.
@@ -256,21 +257,27 @@ class RiskManager:
                     position['trailing_stop'] = new_trailing_stop
                     update_broker_sl(symbol, new_trailing_stop)
     
-    def remove_position(self, symbol):
-        """Remove a position from tracking"""
-        self.open_positions = [pos for pos in self.open_positions if pos['symbol'] != symbol]
-        logger.info(f"Removed position: {symbol}")
+    def remove_position(self, symbol, direction=None):
+        """Remove a position from tracking by symbol and (optionally) direction"""
+        before = len(self.open_positions)
+        if direction:
+            self.open_positions = [pos for pos in self.open_positions if not (pos['symbol'] == symbol and pos['direction'] == direction)]
+        else:
+            self.open_positions = [pos for pos in self.open_positions if pos['symbol'] != symbol]
+        after = len(self.open_positions)
+        logger.info(f"Removed position: {symbol} {direction if direction else ''} (before: {before}, after: {after})")
     
     def update_position_pnl(self, symbol, current_price):
-        """Update unrealized P&L for a position"""
+        """Update unrealized and realized P&L for a position"""
         for position in self.open_positions:
             if position['symbol'] == symbol:
                 if position['direction'] == 'buy':
                     pnl = (current_price - position['entry_price']) * position['lot_size'] * 100000
                 else:
                     pnl = (position['entry_price'] - current_price) * position['lot_size'] * 100000
-                
                 position['unrealized_pnl'] = pnl
+                position['pnl'] = pnl
+                logger.info(f"Updated PnL for {symbol} {position['direction']}: {pnl}")
                 break
     
     def check_stop_loss_take_profit(self, symbol, current_price):

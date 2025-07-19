@@ -245,95 +245,61 @@ class EnhancedTrader:
                 logger.error(f"Error initializing strategy for {symbol}: {e}")
     
     def process_symbol(self, symbol: str):
-        """Process a single symbol with enhanced error handling"""
+        """Process trading logic for a single symbol with strict risk and exit management."""
         try:
-            # Fetch market data
-            data = fetch_mt5_data(symbol, TIMEFRAMES[0], n_bars=200, login=self.mt5_login, password=self.mt5_password, server=self.mt5_server)
+            # Fetch latest data
+            data = fetch_mt5_data(symbol, TIMEFRAMES[0], n_bars=100)
             if data is None or data.empty:
-                logger.warning(f"No data received for {symbol}")
+                logger.warning(f"No data for {symbol}, skipping.")
                 return
-            
-            # Get current market price
-            current_price = data['close'].iloc[-1]
-            
-            # Check existing positions for stop-loss/take-profit
-            self.check_position_exits(symbol, current_price)
-            
-            # Check if we can open new positions
-            if not self.risk_manager.can_open_position(symbol):
-                logger.info(f"Cannot open position for {symbol} - risk limits reached")
-                return
-            
-            # Generate trading signals
-            strategy_cls = self.strategies[symbol]['strategy']
-            strategy = strategy_cls(data, **self.strategies[symbol]['params'])
-            signals = strategy.generate_signals()
-            
-            if not signals.empty:
-                latest = signals.iloc[-1]
-                logger.info(f"DEBUG: {symbol} | Short_MA={latest.get('Short_MA')} | Long_MA={latest.get('Long_MA')} | RSI={latest.get('RSI')} | Signal={latest.get('Signal')} | Position={latest.get('Position')}")
-                if not self.risk_manager.can_open_position(symbol):
-                    logger.info(f"DEBUG: Risk manager blocked opening position for {symbol}")
-                else:
-                    logger.info(f"DEBUG: Risk manager allows opening position for {symbol}")
-                
-                if latest['Position'] == 1:  # Buy signal
-                    logger.info(f"BUY signal for {symbol} at {current_price}")
-                    if not self.paper_trading:
-                        success = self.execute_buy_order(symbol, current_price, data=data)
-                        if success:
-                            logger.info(f"Buy order successfully executed for {symbol}")
-                        else:
-                            logger.error(f"Buy order failed for {symbol}")
-                    else:
-                        logger.info(f"Paper trading: Would buy {symbol} at {current_price}")
-                        # Simulate trade in paper trading mode
-                        trade = {
-                            'symbol': symbol,
-                            'side': 'buy',
-                            'price': current_price,
-                            'lot_size': self.risk_manager.calculate_position_size(current_price, self.risk_manager.calculate_stop_loss(current_price, 'buy')),
-                            'timestamp': str(datetime.now()),
-                            'mode': 'paper'
-                        }
-                        self.analytics.trades.append(trade)
-                        self.write_trade_history_file()
 
-                elif latest['Position'] == -1:  # Sell signal
-                    logger.info(f"SELL signal for {symbol} at {current_price}")
-                    if not self.paper_trading:
-                        success = self.execute_sell_order(symbol, current_price, data=data)
-                        if success:
-                            logger.info(f"Sell order successfully executed for {symbol}")
-                        else:
-                            logger.error(f"Sell order failed for {symbol}")
-                    else:
-                        logger.info(f"Paper trading: Would sell {symbol} at {current_price}")
-                        # Simulate trade in paper trading mode
-                        trade = {
-                            'symbol': symbol,
-                            'side': 'sell',
-                            'price': current_price,
-                            'lot_size': self.risk_manager.calculate_position_size(current_price, self.risk_manager.calculate_stop_loss(current_price, 'sell')),
-                            'timestamp': str(datetime.now()),
-                            'mode': 'paper'
-                        }
-                        self.analytics.trades.append(trade)
-                        self.write_trade_history_file()
-                        
+            # Get current price
+            current_price = data['close'].iloc[-1]
+
+            # Always check for exit conditions first
+            self.check_position_exits(symbol, current_price)
+
+            # Enforce max open positions and daily loss
+            open_positions = len(self.risk_manager.open_positions)
+            if open_positions >= self.max_positions:
+                logger.info(f"Max open positions reached ({self.max_positions}), not opening new trades.")
+                return
+            if self.daily_pnl <= -self.max_daily_loss:
+                logger.warning(f"Daily loss limit reached: {self.daily_pnl:.2f}, not opening new trades.")
+                self.emergency_stop = True
+                return
+
+            # Get strategy and generate signal
+            strategy = self.strategies.get(symbol)
+            if not strategy:
+                logger.warning(f"No strategy found for {symbol}, skipping.")
+                return
+            signal = strategy.generate_signal(data)
+            if signal == 0:
+                return  # No trade signal
+
+            # Prevent opening new trade in same direction
+            for pos in self.risk_manager.open_positions.values():
+                if pos['symbol'] == symbol and pos['direction'] == ('buy' if signal > 0 else 'sell'):
+                    logger.info(f"Position already open in same direction for {symbol}, skipping new trade.")
+                    return
+
+            # Execute trade
+            if signal > 0:
+                self.execute_buy_order(symbol, current_price, data)
+            elif signal < 0:
+                self.execute_sell_order(symbol, current_price, data)
+
         except Exception as e:
-            logger.error(f"Error processing {symbol}: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error processing symbol {symbol}: {e}")
     
     def check_position_exits(self, symbol, current_price):
-        """Check if positions should be closed due to stop-loss or take-profit"""
+        """Check if positions should be closed due to stop-loss, take-profit, or max duration/unprofitability."""
         try:
             # Check risk manager for position exits
             exit_reason = self.risk_manager.check_stop_loss_take_profit(symbol, current_price)
-            
             if exit_reason:
                 logger.info(f"Triggering {exit_reason.upper()} for {symbol} at {current_price}")
-                
                 # Close position via MT5
                 if not self.paper_trading:
                     positions = mt5_executor.get_open_positions()
@@ -351,7 +317,28 @@ class EnhancedTrader:
                             else:
                                 logger.error(f"Failed to close position for {symbol}")
                             break
-                            
+            # Additional: Close trades after max duration or if unprofitable for too long
+            max_duration = 60 * 60 * 4  # 4 hours
+            max_unprofit_time = 60 * 60 * 2  # 2 hours
+            now = datetime.now()
+            for pos in self.risk_manager.open_positions.values():
+                if pos['symbol'] == symbol:
+                    entry_time = pos.get('entry_time')
+                    if entry_time:
+                        entry_dt = datetime.strptime(entry_time, '%Y-%m-%dT%H:%M:%S')
+                        duration = (now - entry_dt).total_seconds()
+                        if duration > max_duration:
+                            logger.info(f"Closing {symbol} position after max duration {duration/3600:.2f}h")
+                            if not self.paper_trading:
+                                mt5_executor.close_position(pos['ticket'])
+                            self.analytics.log_trade_exit(symbol, current_price, 0, reason='max_duration', duration=duration)
+                            self.risk_manager.remove_position(symbol)
+                        elif duration > max_unprofit_time and pos.get('pnl', 0) < 0:
+                            logger.info(f"Closing {symbol} position after prolonged unprofitability.")
+                            if not self.paper_trading:
+                                mt5_executor.close_position(pos['ticket'])
+                            self.analytics.log_trade_exit(symbol, current_price, pos.get('pnl', 0), reason='max_unprofit_time', duration=duration)
+                            self.risk_manager.remove_position(symbol)
         except Exception as e:
             logger.error(f"Error checking position exits for {symbol}: {e}")
     

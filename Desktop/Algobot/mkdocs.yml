@@ -1,0 +1,7 @@
+site_name: Algobot Docs
+nav:
+  - Home: index.md
+  - Configuration: config.md
+  - Strategy Development: strategy.md
+theme:
+  name: material 
